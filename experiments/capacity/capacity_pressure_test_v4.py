@@ -4,6 +4,19 @@
 容量压力测试 v4 — Boltzmann-Elegant 损失集成
 =========================================================================
 
+v4.3 → v4.4 变更:
+    [1] τ 排除 target (由 boltzmann_elegant.py v4.4 实现)
+    [2] force_b 含排斥力 (由 boltzmann_elegant.py v4.4 实现)
+    [3] Early stopping: accuracy AND loss 双重判据
+        · 旧: 仅 smoothed loss 无改善时触发
+        · 新: accuracy 和 loss 同时停滞才触发
+        · 理由: acc=100% + loss↓ 表示几何精进, 不应中断;
+                loss↓ + acc<100% 表示可能仍有逃逸机会
+    [4] 双轨分析: best checkpoint + final model
+        · 导出两套 embedding (ring_features_best.npz, ring_features_final.npz)
+        · ring_features.npz 默认指向 best (向后兼容)
+        · 退化幅度 (test_acc_drop, nn_rate_drop) 作为诊断信号记录
+
 v3 → v4 变更:
     [v4] L_Elegant → Boltzmann-Elegant
          · 损失函数从二体力升级为 N 体 Boltzmann 分类
@@ -638,10 +651,17 @@ def train_single_config(
 
             loss_tracker.update(loss_val, interval=log_interval)
 
-            if loss_tracker.patience_exceeded(patience) and best_train_acc > 0.3:
-                print(f"  [Early Stop] Smoothed loss 已 "
-                      f"{loss_tracker.steps_without_improvement} epochs "
-                      f"无改善, 在 epoch {epoch} 停止 "
+            # [v4.4] Early stopping: accuracy AND loss 双重判据
+            #   acc=100% 且 loss 仍下降 → 模型在精进几何结构, 继续训练
+            #   loss 很低但 acc<100% → 局部最优, 但可能仍有逃逸机会
+            #   只有两者同时停滞才认为训练已收敛
+            acc_stalled = (epochs_without_improvement >= patience)
+            loss_stalled = loss_tracker.patience_exceeded(patience)
+
+            if acc_stalled and loss_stalled and best_train_acc > 0.3:
+                print(f"  [Early Stop] Accuracy 和 Loss 均已 "
+                      f"{patience} epochs 无改善, "
+                      f"在 epoch {epoch} 停止 "
                       f"(best acc @ {last_best_epoch})")
                 break
 
@@ -649,39 +669,87 @@ def train_single_config(
 
     t_elapsed = time.time() - t_start
 
-    # ---- 最终评估 ----
-    model.eval()
-    with torch.no_grad():
-        all_embeds_eval = model.embedding.weight.data[:vocab_size]
+    # ================================================================
+    #  [v4.4] 双轨最终评估: best checkpoint + final model
+    # ================================================================
+    #
+    # 一个不可控不稳定的模型不是优秀的模型。
+    # 同时分析 best 和 final 状态, 让"退化幅度"成为可量化的诊断信号。
 
-        test_accs = []
-        for _ in range(10):
-            ti, tt = gen.generate_test_batch(batch_size, max_span)
-            ti, tt = ti.to(device), tt.to(device)
-            zt = model.forward(ti)
-            ta, _, _ = evaluate_nearest_neighbor(zt, tt, all_embeds_eval)
-            test_accs.append(ta)
-        final_test_acc = float(np.mean(test_accs))
-        final_test_std = float(np.std(test_accs))
+    def _evaluate_model_state(eval_model, tag):
+        """对给定模型状态做完整评估, 返回指标字典和 embedding。"""
+        eval_model.eval()
+        with torch.no_grad():
+            all_e = eval_model.embedding.weight.data[:vocab_size]
 
-        nn_rate = ring_neighbor_consistency(all_embeds_eval, vocab_size)
-        phase_scores = phase_linearity_top_scores(all_embeds_eval, vocab_size)
+            # 10 次测试评估取均值
+            t_accs = []
+            for _ in range(10):
+                ti, tt = gen.generate_test_batch(batch_size, max_span)
+                ti, tt = ti.to(device), tt.to(device)
+                zt = eval_model.forward(ti)
+                ta, _, _ = evaluate_nearest_neighbor(zt, tt, all_e)
+                t_accs.append(ta)
+            test_acc_mean = float(np.mean(t_accs))
+            test_acc_std = float(np.std(t_accs))
 
-    # ---- Embedding 导出 + TDA ----
-    feat_path = os.path.join(output_dir, "ring_features.npz")
-    export_embedding(model, vocab_size, feat_path)
+            nn = ring_neighbor_consistency(all_e, vocab_size)
+            ph = phase_linearity_top_scores(all_e, vocab_size)
+            mags = all_e.abs().pow(2).mean(dim=1).sqrt().cpu().numpy()
 
-    z_np = model.embedding.weight.data[:vocab_size].detach().cpu().numpy()
-    z_np = np.asarray(z_np, dtype=np.complex128)
-    tda = quick_tda_audit(z_np, k=6)
+        # Embedding 导出
+        feat_p = os.path.join(output_dir, f"ring_features_{tag}.npz")
+        export_embedding(eval_model, vocab_size, feat_p)
 
-    # ---- 诊断 ----
-    emb_mags = all_embeds_eval.abs().pow(2).mean(dim=1).sqrt().cpu().numpy()
+        z = eval_model.embedding.weight.data[:vocab_size].detach().cpu().numpy()
+        z = np.asarray(z, dtype=np.complex128)
+        tda_r = quick_tda_audit(z, k=6)
+
+        return {
+            "test_acc": test_acc_mean,
+            "test_std": test_acc_std,
+            "nn_rate": nn,
+            "phase_scores": ph,
+            "mag_mean": float(np.mean(mags)),
+            "mag_std": float(np.std(mags)),
+            "tda": tda_r,
+            "features_path": feat_p,
+        }
+
+    # ---- Final model 评估 ----
+    final_metrics = _evaluate_model_state(model, "final")
+
+    # ---- Best checkpoint 评估 ----
+    ckpt_path = os.path.join(output_dir, "best_checkpoint.pth")
+    best_metrics = None
+    if os.path.exists(ckpt_path):
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        best_model = AnlaManifoldInpainter(vocab_size, d_model, num_heads).to(device)
+        best_model.load_state_dict(ckpt["model_state_dict"])
+        best_metrics = _evaluate_model_state(best_model, "best")
+        # 同时保留一份 ring_features.npz 指向 best (向后兼容可视化脚本)
+        import shutil
+        shutil.copy2(
+            os.path.join(output_dir, "ring_features_best.npz"),
+            os.path.join(output_dir, "ring_features.npz"),
+        )
+        del best_model
+    else:
+        print(f"  [WARN] 未找到 best_checkpoint, 仅使用 final model 分析")
+        # 兼容: ring_features.npz 指向 final
+        import shutil
+        shutil.copy2(
+            os.path.join(output_dir, "ring_features_final.npz"),
+            os.path.join(output_dir, "ring_features.npz"),
+        )
+
+    # 使用 best_metrics (如有) 作为主报告, 否则用 final
+    primary = best_metrics if best_metrics is not None else final_metrics
 
     # ---- 汇总结果 ----
     result = {
         "config": cfg,
-        "loss_mode": loss_mode,   # [v4]
+        "loss_mode": loss_mode,
         "effective_weight_decay": wd,
         "final_rho": rho,
         "vocab_d_ratio": ratio,
@@ -690,20 +758,33 @@ def train_single_config(
         "final_epoch": epoch,
         "best_train_acc": best_train_acc,
         "best_train_epoch": last_best_epoch,
-        "final_test_acc": final_test_acc,
-        "final_test_std": final_test_std,
+        # [v4.4] 主报告基于 best checkpoint
+        "final_test_acc": primary["test_acc"],
+        "final_test_std": primary["test_std"],
         "best_test_acc": best_test_acc,
-        "ring_nn_consistency": nn_rate,
-        "phase_linearity": phase_scores,
-        "embedding_mag_mean": float(np.mean(emb_mags)),
-        "embedding_mag_std": float(np.std(emb_mags)),
-        "tda_quick": tda,
-        "features_path": feat_path,
+        "ring_nn_consistency": primary["nn_rate"],
+        "phase_linearity": primary["phase_scores"],
+        "embedding_mag_mean": primary["mag_mean"],
+        "embedding_mag_std": primary["mag_std"],
+        "tda_quick": primary["tda"],
+        "features_path": primary["features_path"],
         "history": history,
+        # [v4.4] 双轨指标: 对比 best vs final
+        "dual_track": {
+            "best": best_metrics,
+            "final": final_metrics,
+            "degradation": {
+                "test_acc_drop": final_metrics["test_acc"] - (
+                    best_metrics["test_acc"] if best_metrics else final_metrics["test_acc"]
+                ),
+                "nn_rate_drop": final_metrics["nn_rate"] - (
+                    best_metrics["nn_rate"] if best_metrics else final_metrics["nn_rate"]
+                ),
+            } if best_metrics else None,
+        },
     }
 
     # [v4] 附加 Boltzmann 最终诊断
-    # [v4.3] Boltzmann 最终诊断 (τ 来自最终 batch 的 be_info)
     if loss_mode == "boltzmann" and be_info:
         result["final_tau"] = be_info.get("tau", 0)
         result["final_p_target_mean"] = be_info.get("p_target_mean", 0)
@@ -718,10 +799,23 @@ def train_single_config(
 
     print(f"\n  [{cfg['name']}] 完成 (loss={loss_mode}):")
     print(f"    训练准确率: {best_train_acc:.2%} (epoch {last_best_epoch})")
-    print(f"    泛化准确率: {final_test_acc:.2%} ± {final_test_std:.2%}")
-    print(f"    环邻居一致率: {nn_rate:.1%}")
-    print(f"    相位线性度 (max): {phase_scores['all_scores_max']:.4f}")
-    print(f"    高线性度维度: {phase_scores['high_linearity_count']}/{d_model}")
+    # [v4.4] 双轨报告
+    if best_metrics:
+        print(f"    泛化准确率 (best ckpt):  "
+              f"{best_metrics['test_acc']:.2%} ± {best_metrics['test_std']:.2%}")
+        print(f"    泛化准确率 (final):      "
+              f"{final_metrics['test_acc']:.2%} ± {final_metrics['test_std']:.2%}")
+        deg = result["dual_track"]["degradation"]
+        print(f"    退化幅度: test_acc {deg['test_acc_drop']:+.2%}, "
+              f"NN% {deg['nn_rate_drop']:+.2%}")
+    else:
+        print(f"    泛化准确率: "
+              f"{final_metrics['test_acc']:.2%} ± {final_metrics['test_std']:.2%}")
+    print(f"    环邻居一致率: {primary['nn_rate']:.1%}")
+    print(f"    相位线性度 (max): {primary['phase_scores']['all_scores_max']:.4f}")
+    print(f"    高线性度维度: "
+          f"{primary['phase_scores']['high_linearity_count']}/{d_model}")
+    tda = primary["tda"]
     if tda.get("available"):
         print(f"    TDA H1 count: {tda['h1_count']}")
         print(f"    TDA dominant: {tda['dominant_persistence']:.4f}")

@@ -1,0 +1,9 @@
+# Project Anla — 核心依赖
+torch>=2.0
+numpy>=1.24
+scipy>=1.10
+matplotlib>=3.7
+scikit-learn>=1.2
+
+# 可选依赖 (TDA 拓扑分析)
+# ripser>=0.6

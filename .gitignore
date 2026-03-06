@@ -1,21 +1,61 @@
-# Python cache
+# =====================================================================
+#  Python
+# =====================================================================
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
 
-# Checkpoints & model weights
+# =====================================================================
+#  训练产物 (可重新生成)
+# =====================================================================
+
+# 模型权重
+*.pth
+*.pt
+*.ckpt
 checkpoints/
 checkpoints_2d/
-*.pth
 
-# Archives
-programs.zip
+# 数据文件 (embedding 导出等)
+# 注: Logs/config_B_analysis/ 下的 .npz 通过后续 !规则 显式保留
+*.npz
 
-# IDE / OS
+# 逐 epoch 可视化 (训练过程中间截图, 可重新生成)
+Logs/manifold_vis/
+Logs/manifold_vis_permuted/
+Logs/recursive_k5_vis/
+Logs/ring_transformer_vis/
+
+# =====================================================================
+#  Config B 实验结果 — 显式保留
+# =====================================================================
+# 这些是 README 引用的核心分析结果, 需要追踪
+!Logs/config_B_analysis/**/*.npz
+!Logs/config_B_analysis/**/*.json
+!Logs/config_B_analysis/**/*.png
+!Logs/config_B_analysis/**/*.txt
+
+# =====================================================================
+#  IDE / OS
+# =====================================================================
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
 .DS_Store
 Thumbs.db
 
-# Output fragments
+# =====================================================================
+#  杂项
+# =====================================================================
+programs.zip
 ai_context_parts/
+*.log
+.env

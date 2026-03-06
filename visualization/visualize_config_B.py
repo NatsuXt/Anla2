@@ -35,8 +35,8 @@ def load_training_log(data_dir):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
-def load_embedding(data_dir):
-    path = os.path.join(data_dir, "ring_features.npz")
+def load_embedding(data_dir, filename="ring_features.npz"):
+    path = os.path.join(data_dir, filename)
     if not os.path.exists(path):
         raise FileNotFoundError(f"No embedding: {path}")
     return np.load(path)["z"]
@@ -511,7 +511,7 @@ def plot_attention_pattern(data_dir, config, save_path, device="cpu"):
 # =============================================================================
 #  Summary Report
 # =============================================================================
-def generate_summary_report(result, z, save_path):
+def generate_summary_report(result, z, save_path, tag=""):
     cfg = result["config"]; V, D = z.shape; mags = np.abs(z)
     phases = np.angle(z); pd = np.diff(phases, axis=0); pd = np.arctan2(np.sin(pd), np.cos(pd))
     diff = z[:, np.newaxis, :]-z[np.newaxis, :, :]
@@ -520,8 +520,9 @@ def generate_summary_report(result, z, save_path):
     nn_rd = np.minimum(np.abs(nn_ids-np.arange(V)), V-np.abs(nn_ids-np.arange(V)))
     pds = np.array([max(0.0, 1.0-np.std(pd[:,d])/1.5) for d in range(D)])
 
+    tag_label = f" [{tag.upper()}]" if tag else ""
     L = []
-    L.append("="*80); L.append("  Config B - Quantitative Summary"); L.append("="*80)
+    L.append("="*80); L.append(f"  Config B - Quantitative Summary{tag_label}"); L.append("="*80)
     L.append(f"\n  I. Config: V={cfg['vocab_size']}, D={cfg['d_model']}, V/D={cfg['vocab_size']//cfg['d_model']}")
     L.append(f"     Heads={cfg['num_heads']}, HeadDim={cfg['d_model']//cfg['num_heads']}, FFN={cfg['d_model']*4}")
     tp = result.get('total_params', 'N/A')
@@ -556,10 +557,34 @@ def generate_summary_report(result, z, save_path):
         L.append(f"\n  VII. TDA: unavailable")
     alpha = (V-1)/(2*D)
     L.append(f"\n  VIII. Theory: alpha={alpha:.2f}, freq_cov={D}/{V//2}={D/(V//2):.1%}")
+    # [v4.4] 双轨退化诊断
+    dt = result.get("dual_track")
+    if dt and dt.get("degradation"):
+        deg = dt["degradation"]
+        L.append(f"\n  IX. Stability (best → final)")
+        if dt.get("best"):
+            L.append(f"     Best  Test Acc:  {dt['best']['test_acc']:.2%}")
+            L.append(f"     Final Test Acc:  {dt['final']['test_acc']:.2%}")
+        L.append(f"     Test Acc drop:  {deg['test_acc_drop']:+.2%}")
+        L.append(f"     NN% drop:       {deg['nn_rate_drop']:+.2%}")
     L.append("\n"+"="*80)
     report = "\n".join(L)
     with open(save_path, "w", encoding="utf-8") as f: f.write(report)
     print(report); print(f"\n  [OK] Summary: {save_path}")
+
+# =============================================================================
+#  Dual-Track Visualization Helper
+# =============================================================================
+def _run_embedding_plots(z, config, vis_dir, tag=""):
+    """对单套 embedding 运行所有 embedding 相关的可视化。"""
+    suffix = f"_{tag}" if tag else ""
+    plot_embedding_pca(z, config, os.path.join(vis_dir, f"03_embedding_pca{suffix}.png"))
+    plot_phase_structure(z, config, os.path.join(vis_dir, f"04_phase_structure{suffix}.png"))
+    plot_ring_topology(z, config, os.path.join(vis_dir, f"05_ring_topology{suffix}.png"))
+    plot_distance_matrix(z, config, os.path.join(vis_dir, f"06_distance_matrix{suffix}.png"))
+    plot_energy_landscape(z, config, os.path.join(vis_dir, f"07_energy_landscape{suffix}.png"))
+    plot_magnitude_analysis(z, config, os.path.join(vis_dir, f"08_magnitude_analysis{suffix}.png"))
+    plot_tda_persistence(z, config, os.path.join(vis_dir, f"09_tda_persistence{suffix}.png"))
 
 # =============================================================================
 #  Main
@@ -571,21 +596,46 @@ def main():
     args = parser.parse_args()
     data_dir = args.data_dir; vis_dir = os.path.join(data_dir, "vis")
     os.makedirs(vis_dir, exist_ok=True)
-    print("="*72); print("  Config B Full Visualization"); print("="*72)
+    print("="*72); print("  Config B Full Visualization (v4.4 Dual-Track)"); print("="*72)
     print(f"  Data: {data_dir}\n  Output: {vis_dir}\n")
     result = load_training_log(data_dir); history, config = result["history"], result["config"]
-    z = load_embedding(data_dir); print(f"  Embedding: {z.shape}, {z.dtype}\n")
+
+    # ---- 训练动态 & Boltzmann 诊断 (与 embedding 无关, 只跑一次) ----
     plot_training_dynamics(history, config, result, os.path.join(vis_dir, "01_training_dynamics.png"))
     plot_boltzmann_diagnostics(history, config, os.path.join(vis_dir, "02_boltzmann_diagnostics.png"))
-    plot_embedding_pca(z, config, os.path.join(vis_dir, "03_embedding_pca.png"))
-    plot_phase_structure(z, config, os.path.join(vis_dir, "04_phase_structure.png"))
-    plot_ring_topology(z, config, os.path.join(vis_dir, "05_ring_topology.png"))
-    plot_distance_matrix(z, config, os.path.join(vis_dir, "06_distance_matrix.png"))
-    plot_energy_landscape(z, config, os.path.join(vis_dir, "07_energy_landscape.png"))
-    plot_magnitude_analysis(z, config, os.path.join(vis_dir, "08_magnitude_analysis.png"))
-    plot_tda_persistence(z, config, os.path.join(vis_dir, "09_tda_persistence.png"))
-    plot_attention_pattern(data_dir, config, os.path.join(vis_dir, "10_attention_pattern.png"), device=args.device)
-    generate_summary_report(result, z, os.path.join(vis_dir, "summary_report.txt"))
+
+    # ---- [v4.4] 双轨 embedding 分析 ----
+    has_best = os.path.exists(os.path.join(data_dir, "ring_features_best.npz"))
+    has_final = os.path.exists(os.path.join(data_dir, "ring_features_final.npz"))
+
+    if has_best and has_final:
+        # 双轨模式: 分别分析 best 和 final
+        print("\n  === Dual-Track: Best Checkpoint ===")
+        z_best = load_embedding(data_dir, "ring_features_best.npz")
+        print(f"  Embedding (best): {z_best.shape}, {z_best.dtype}")
+        _run_embedding_plots(z_best, config, vis_dir, tag="best")
+
+        print("\n  === Dual-Track: Final Model ===")
+        z_final = load_embedding(data_dir, "ring_features_final.npz")
+        print(f"  Embedding (final): {z_final.shape}, {z_final.dtype}")
+        _run_embedding_plots(z_final, config, vis_dir, tag="final")
+
+        # 同时用 best 生成无后缀版本 (向后兼容)
+        _run_embedding_plots(z_best, config, vis_dir, tag="")
+
+        # Attention pattern 使用 best checkpoint
+        plot_attention_pattern(data_dir, config, os.path.join(vis_dir, "10_attention_pattern.png"), device=args.device)
+
+        # Summary report 使用 best embedding, 包含退化信息
+        generate_summary_report(result, z_best, os.path.join(vis_dir, "summary_report.txt"), tag="best")
+        generate_summary_report(result, z_final, os.path.join(vis_dir, "summary_report_final.txt"), tag="final")
+    else:
+        # 单轨模式: 向后兼容
+        z = load_embedding(data_dir); print(f"  Embedding: {z.shape}, {z.dtype}\n")
+        _run_embedding_plots(z, config, vis_dir, tag="")
+        plot_attention_pattern(data_dir, config, os.path.join(vis_dir, "10_attention_pattern.png"), device=args.device)
+        generate_summary_report(result, z, os.path.join(vis_dir, "summary_report.txt"))
+
     print(f"\n{'='*72}\n  Done! Output: {vis_dir}\n{'='*72}")
 
 if __name__ == "__main__":

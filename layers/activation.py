@@ -113,6 +113,12 @@ class PhaseTwist(ComplexLayer):
         cos_diff = torch.cos(theta - phi)
         m = r * (1.0 + beta * cos_diff)
 
+        # [v4.4] 防止 m < 0 (当 β > 1 且 cos_diff ≈ -1 时可能触发)
+        #   m < 0 导致 m·e^{iθ} 的模长-相位关系不连续 (相位翻转 π),
+        #   反向传播中 df/dr 在 m=0 处梯度方向跳变。
+        #   clamp 到 eps 保证正定, 不影响正常训练 (β_init=0.01 << 1)。
+        m = torch.clamp(m, min=EPS)
+
         # AM → PM 耦合: 模长驱动相位旋转
         theta_out = theta + gamma * r
 
@@ -157,6 +163,7 @@ class PhaseTwist(ComplexLayer):
         cos_diff = torch.cos(theta - phi)
         sin_diff = torch.sin(theta - phi)
         m = r * (1.0 + beta * cos_diff)
+        m = torch.clamp(m, min=EPS)                    # [v4.4] 与前向一致
         theta_out = theta + gamma * r
         e_i_tout = torch.polar(torch.ones_like(theta_out), theta_out)
         f = m * e_i_tout                           # [v4] m 替代 tanh(m)
