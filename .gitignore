@@ -1,0 +1,21 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Checkpoints & model weights
+checkpoints/
+checkpoints_2d/
+*.pth
+
+# Archives
+programs.zip
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Output fragments
+ai_context_parts/

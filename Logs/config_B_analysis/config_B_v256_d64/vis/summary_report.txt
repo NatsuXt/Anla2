@@ -1,0 +1,37 @@
+================================================================================
+  Config B - Quantitative Summary
+================================================================================
+
+  I. Config: V=256, D=64, V/D=4
+     Heads=4, HeadDim=16, FFN=256
+     Params: 66,816
+
+  II. Results
+     Train Acc:  100.00% (epoch 6600)
+     Test Acc:   75.91% +/- 6.74%
+     Time:       112s
+     rho:        0.2598
+
+  III. Boltzmann
+     tau:        37.9724235534668
+     p_tgt:      0.17274817824363708
+     neg%:       0.24752475321292877
+
+  IV. Geometry
+     Mag mean/std: 0.3673/0.3502
+     Welch LB:   0.1085
+     JL UB:      0.2081
+
+  V. Ring Topology
+     NN%:        100.0% (256/256)
+     Dist min/med/max: 1.7174/5.5865/9.3467
+
+  VI. Phase
+     Linearity max/mean: 0.4776/0.3232
+     #High(>0.5): 0/64
+
+  VII. TDA: unavailable
+
+  VIII. Theory: alpha=1.99, freq_cov=64/128=50.0%
+
+================================================================================
