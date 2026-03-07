@@ -7,27 +7,27 @@
      Params: 66,816
 
   II. Results
-     Train Acc:  96.15% (epoch 8400)
-     Test Acc:   88.88% +/- 2.70%
-     Time:       126s
-     rho:        0.6256
+     Train Acc:  92.22% (epoch 9200)
+     Test Acc:   84.63% +/- 4.13%
+     Time:       128s
+     rho:        0.5979
 
   III. Boltzmann
-     tau:        10.692631721496582
-     p_tgt:      0.9676521420478821
-     neg%:       0.0
+     tau:        11.365489959716797
+     p_tgt:      0.8972357511520386
+     neg%:       0.012658228166401386
 
   IV. Geometry
-     Mag mean/std: 0.7033/0.2242
+     Mag mean/std: 0.6761/0.2352
      Welch LB:   0.1085
      JL UB:      0.2081
 
   V. Ring Topology
      NN%:        44.9% (115/256)
-     Dist min/med/max: 4.7775/8.3162/10.6373
+     Dist min/med/max: 4.0005/8.0733/10.1360
 
   VI. Phase
-     Linearity max/mean: 0.0794/0.0031
+     Linearity max/mean: 0.1228/0.0074
      #High(>0.5): 0/64
 
   VII. TDA: unavailable
@@ -35,9 +35,9 @@
   VIII. Theory: alpha=1.99, freq_cov=64/128=50.0%
 
   IX. Stability (best → final)
-     Best  Test Acc:  88.88%
-     Final Test Acc:  89.40%
-     Test Acc drop:  +0.52%
-     NN% drop:       +10.55%
+     Best  Test Acc:  84.63%
+     Final Test Acc:  83.85%
+     Test Acc drop:  -0.78%
+     NN% drop:       +8.20%
 
 ================================================================================
