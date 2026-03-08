@@ -1,18 +1,21 @@
 """
 保存位置: Anla/visualization/visualize_config_B.py
-Config B 全量可视化分析 (v5.2)
+Config B 全量可视化分析 (v5.3)
+
+v5.3 变更:
+    - 模型重建: 自动识别 v4/v5/v6 checkpoint, 使用对应模型类
+    - Attention Pattern: 兼容 v5/v6 多 Block 结构
+    - 默认路径: 优先查找 v6, 其次 v5, 最后 v4
 
 v5.2 变更:
     - Fig 2 τ 面板: 显示 τ* (self-consistent) 和 τ₀ (uniform std) 双曲线
     - Fig 7 Energy Landscape: 使用归一化能量 Ẽ=E/D, 自洽 τ 计算
     - Fig 1 ρ 注释: 更新为 ρ=p_target_mean 语义
     - Summary Report: 添加 τ₀, BE-NN% (Boltzmann-Elegant 能量最近邻)
-    - 模型重建: 自动识别 v4/v5 checkpoint, 使用对应模型类
-    - Attention Pattern: 兼容 v5 多 Block 结构
 
 用法:
     python -m Anla.visualization.visualize_config_B
-    python -m Anla.visualization.visualize_config_B --data-dir Logs/capacity_pressure_test_v5/config_B_v256_d64
+    python -m Anla.visualization.visualize_config_B --data-dir Logs/capacity_pressure_test_v6/config_B_v256_d64
 """
 import argparse, json, os, sys, warnings
 from typing import Dict, Any, Optional, Tuple
@@ -60,18 +63,23 @@ def load_checkpoint(data_dir, device="cpu"):
 def reconstruct_model(checkpoint, device="cpu"):
     try:
         import torch
-        # [v5.2] 使用 v5 模型类
+        # [v5.3] 自动识别 v4/v5/v6 checkpoint, 使用对应模型类
         version = checkpoint.get("version", "v4")
-        if version.startswith("v5"):
+        cfg = checkpoint["config"]
+        if version.startswith("v6"):
+            from Anla.experiments.capacity.capacity_pressure_test_v6 import AnlaManifoldInpainter_v6
+            num_blocks = cfg.get("num_blocks", 3)
+            model = AnlaManifoldInpainter_v6(
+                cfg["vocab_size"], cfg["d_model"], cfg["num_heads"], num_blocks
+            ).to(device)
+        elif version.startswith("v5"):
             from Anla.experiments.capacity.capacity_pressure_test_v5 import AnlaManifoldInpainter_v5
-            cfg = checkpoint["config"]
             num_blocks = cfg.get("num_blocks", 3)
             model = AnlaManifoldInpainter_v5(
                 cfg["vocab_size"], cfg["d_model"], cfg["num_heads"], num_blocks
             ).to(device)
         else:
             from Anla.experiments.capacity.capacity_pressure_test_v4 import AnlaManifoldInpainter
-            cfg = checkpoint["config"]
             model = AnlaManifoldInpainter(cfg["vocab_size"], cfg["d_model"], cfg["num_heads"]).to(device)
         model.load_state_dict(checkpoint["model_state_dict"]); model.eval(); return model
     except Exception as e:
@@ -512,7 +520,7 @@ def plot_attention_pattern(data_dir, config, save_path, device="cpu"):
     if model is None: _save_placeholder(save_path, "Attention - Model Failed"); return
     import torch
 
-    # [v5.2] 兼容 v4 和 v5 模型结构
+    # [v5.3] 兼容 v4, v5, v6 模型结构
     version = checkpoint.get("version", "v4")
     cfg = checkpoint["config"]; vs, sl = cfg["vocab_size"], cfg["seq_len"]
     seq = [(0+i)%vs for i in range(sl)]
@@ -522,10 +530,10 @@ def plot_attention_pattern(data_dir, config, save_path, device="cpu"):
     model.train()
     with torch.no_grad(): model.forward(ids)
 
-    # 获取 attention cache — v5 使用 blocks[0], v4 使用 block
+    # 获取 attention cache — v5/v6 使用 blocks[0], v4 使用 block
     attn_cache = None
-    if version.startswith("v5"):
-        # v5: model.blocks[0].attn.attn_cache
+    if version.startswith(("v5", "v6")):
+        # v5/v6: model.blocks[0].attn.attn_cache
         for blk in model.blocks:
             if hasattr(blk, 'attn') and hasattr(blk.attn, 'attn_cache') and blk.attn.attn_cache is not None:
                 attn_cache = blk.attn.attn_cache; break
@@ -649,16 +657,22 @@ def _run_embedding_plots(z, config, vis_dir, tag=""):
 # =============================================================================
 def main():
     parser = argparse.ArgumentParser(description="Config B Visualization")
-    # [v5.2] 默认路径: 优先查找 v5 输出目录
+    # [v5.3] 默认路径: 优先查找 v6, 其次 v5, 最后 v4
+    default_v6 = os.path.join(_ANLA_ROOT, "Logs", "capacity_pressure_test_v6", "config_B_v256_d64")
     default_v5 = os.path.join(_ANLA_ROOT, "Logs", "capacity_pressure_test_v5", "config_B_v256_d64")
     default_v4 = os.path.join(_ANLA_ROOT, "Logs", "config_B_analysis", "config_B_v256_d64")
-    default_dir = default_v5 if os.path.exists(default_v5) else default_v4
+    if os.path.exists(default_v6):
+        default_dir = default_v6
+    elif os.path.exists(default_v5):
+        default_dir = default_v5
+    else:
+        default_dir = default_v4
     parser.add_argument("--data-dir", type=str, default=default_dir)
     parser.add_argument("--device", type=str, default="cpu")
     args = parser.parse_args()
     data_dir = args.data_dir; vis_dir = os.path.join(data_dir, "vis")
     os.makedirs(vis_dir, exist_ok=True)
-    print("="*72); print("  Config B Full Visualization (v5.2)"); print("="*72)
+    print("="*72); print("  Config B Full Visualization (v5.3)"); print("="*72)
     print(f"  Data: {data_dir}\n  Output: {vis_dir}\n")
     result = load_training_log(data_dir); history, config = result["history"], result["config"]
 
