@@ -1,61 +1,89 @@
 """
 保存位置: Anla/losses/boltzmann_elegant.py
 
-Boltzmann-Elegant 损失函数 (v4.4)
+Boltzmann-Elegant 损失函数 (v5.2)
 =========================================================================
 
-v4.3 → v4.4 变更:
+v4.4 → v5.2 变更:
 
-    [1] τ 排除 target — 消除自反馈正循环
-        旧: τ_n = std_k(E_k^{(n)})            — 包含 E_target
-        新: τ_n = std({E_k^{(n)} : k ≠ tgt})  — 仅竞争者能量
+    [1] 能量归一化 — 消除维度依赖
+        旧: E_k = Σ_d [ln²(r_d/r̂_{k,d}) + |u_d - û_{k,d}|²]       — O(D)
+        新: Ẽ_k = (1/D) Σ_d [ln²(r_d/r̂_{k,d}) + |u_d - û_{k,d}|²] — O(1)
 
         根因:
-            训练推进中 E_target → 0, 而 E_wrong 保持高位, 导致 std(E)
-            被 target 与 competitors 之间的"能量鸿沟"主导,
-            而非竞争者之间的区分难度。τ 因此失控上升, softmax 变平,
-            学习信号消失 — 模型因"做对了"而被惩罚。
+            E_k 是 D 个维度的求和, 因此 E_k = O(D)。
+            τ = std(E_k) = O(√D), 导致:
+              · τ 的绝对值随 d_model 变化, 不同配置之间不可比
+              · 高维空间中 τ 偏大, 引入虚假的维度诅咒
+            归一化后 Ẽ_k = O(1), τ̃ = O(1/√D), 消除维度依赖。
 
-            排除 target 后, τ 只度量竞争者之间的分散度:
-              · 竞争者能量相近 (邻居混淆) → τ 小 → softmax 锐利 → 强梯度
-              · 竞争者已被推开 → τ 自然反映有效区分力
-            等价于: 温度描述热浴 (竞争者) 而非目标粒子
+    [2] 自洽 τ (单步) — 用 Boltzmann 概率自加权
+        旧: τ = std_uniform({E_k : k ≠ target})
+            所有竞争者等权重, 远处 token 主导 τ
 
-    [2] force_b 升级为 Term 1 Boltzmann 力 (含排斥)
-        旧: force_b = F_target                 — 纯吸引力
-        新: force_b = (1/τ)(F_target - Σ p_k F_k)  — 吸引 + 排斥
+        新: 两步流程 (不做迭代, 训练循环本身就是外层迭代):
+            Step A: τ₀ = std_uniform({Ẽ_k : k ∈ C})           — 初始估计
+            Step B: p_k^(0) = softmax(-Ẽ_k / τ₀)               — 初始概率
+            Step C: Ē_p = Σ p_k^(0) Ẽ_k                       — Boltzmann 加权均值
+            Step D: τ* = √[Σ p_k^(0) (Ẽ_k - Ē_p)²] + ε       — 自洽温度
 
-        排斥力使 embedding 可以直接推开竞争者, 而非仅靠模型权重间接实现。
-        不含 τ-throughput 修正 (Term 2), 因为 embedding 更新不需要感知
-        τ 对自身的依赖。
+        物理意义:
+            τ* 度量的是 "有效竞争者群体" 内部的能量分散度,
+            其中 "有效竞争者" 由 Boltzmann 分布自身定义。
+            p_k 极小的远处 token 对 τ* 几乎无贡献 (被自动压制),
+            只有 p_k 显著的真正竞争者参与温度计算。
 
-    [3] τ-throughput 求和排除 target
-        dτ/dz* 的求和只经过竞争者, 切断 "z → E_target → τ" 自反馈路径。
+            不需要在单步内求解自洽方程 τ = f(τ) 的不动点 ——
+            训练循环本身就是不动点迭代的外层循环:
+            每步重新计算 E_k → 重新计算 p_k → 重新计算 τ*,
+            只要方向对了就够了。
 
-核心公式:
+            类比:
+              · 平均场论: 用上一步的平均场计算当前步
+              · EM 算法:  E-step 用旧参数, M-step 更新
+              · TD Learning: 单步 Bellman 更新
 
-    E_k(z) = Σ_d [ ln²(r_d / r̂_{k,d}) + |u_d - û_{k,d}|² ]
+    [3] 消除 Term 2 (τ-throughput) — 梯度简化
+        旧: dL/dz* = Term1 + Term2
+            Term2 = [(Ē_p - E_target) / ((V-1)·τ³)] · Σ_{k≠tgt}(E_k - Ē_c)F_k
 
-    τ_n = std({E_k^{(n)} : k ≠ target_n})   — per-sample 温度, 零超参
+        新: dL/dz* = Term1 only
+            τ* 视为常数 (stop-gradient), 不参与梯度流
 
-    p_k = softmax(-E_k / τ)                  — logits 仍包含所有 V 个 token
+        理由:
+            a) τ* 已通过 p_k 自适应 — 不需要梯度来教它变成什么值
+            b) τ 稳定时 ∂τ/∂z 本身很小, Term 2 贡献微弱
+            c) 去掉 Term 2 消除了远处 token 通过 τ-throughput 注入的梯度噪声
+            d) 大幅简化代码和计算
 
+        物理类比:
+            热浴温度是环境条件, 粒子在给定温度下运动,
+            不需要通过改变粒子位置来改变热浴温度。
+
+    [4] force_a 与 force_b 统一为 Term 1
+        旧: force_a = Term1 + Term2, force_b = Term1
+        新: force_a = force_b = Term1 (因为 Term 2 已消除)
+
+        但为了保持接口兼容和未来扩展空间, 仍然返回两个独立的 force。
+
+核心公式 (v5.2):
+
+    Ẽ_k(z) = (1/D) Σ_d [ ln²(r_d / r̂_{k,d}) + |u_d - û_{k,d}|² ]
+
+    τ₀ = std({Ẽ_k : k ≠ target})                  — uniform-weighted
+    p_k^(0) = softmax(-Ẽ_k / τ₀)                    — 初始 Boltzmann 分布
+    τ* = √[Σ_{k≠tgt} p_k^(0) (Ẽ_k - Ē_p)²] + ε   — self-consistent 温度
+
+    logits = -Ẽ_k / τ*                              — 最终 logits (含 target)
+    p_k = softmax(logits)                            — 最终 Boltzmann 分布
     L = -log p_target
 
-完整 Wirtinger 梯度 (含 τ-throughput):
-
-    dL/dz* = (1/τ)(F_target - Σ p_k F_k)
-           + [(Ē_p - E_target) / ((V-1) · τ³)]
-             · Σ_{k≠tgt} (E_k - Ē_c) F_k
+    dL/dz* = (1/(τ* · D)) (F_target - Σ p_k F_k)   — 唯一梯度项
 
     其中:
-        F_k = ∂E_k/∂z*                — L_Elegant 流形力
-        Ē_p = Σ p_k E_k               — Boltzmann 加权平均能量
-        Ē_c = mean({E_k : k ≠ tgt})   — 竞争者算术平均能量
-        V-1  = 竞争者数量
-
-    第一项: 标准 Boltzmann-Elegant 力 (吸引 - 排斥)
-    第二项: τ 对 z 的依赖产生的修正力 (仅通过竞争者传导)
+        F_k = ∂E_k/∂z*     — L_Elegant 流形力 (未归一化, 仍基于 E_k 而非 Ẽ_k)
+        1/(τ*·D) 中的 D    — 来自 Ẽ = E/D 的链式法则: ∂L/∂z* = ∂L/∂Ẽ · ∂Ẽ/∂z*
+                              = (1/τ*)(F_target - ΣpF) · (1/D)
 """
 
 import torch
@@ -71,19 +99,31 @@ def compute_boltzmann_elegant_loss_and_force(
     topk: Optional[int] = None,
 ) -> Tuple[float, torch.Tensor, torch.Tensor, Dict[str, Any]]:
     """
-    Boltzmann-Elegant 损失。零超参, 完整 Wirtinger 梯度。
+    Boltzmann-Elegant 损失 (v5.2)。零超参, 能量归一化, 自洽温度。
 
     Parameters
     ----------
     z_pred : (B, S, D), complex
-    all_embeds : (V, D), complex — detached embedding 快照
-    target_ids : (B, S), long — 非 MASK 位置为 -100
+        模型预测的流形坐标
+    all_embeds : (V, D), complex
+        detached embedding 快照 (所有 vocab token)
+    target_ids : (B, S), long
+        目标 token ID, 非 MASK 位置为 -100
     valid_mask : (B, S), bool
-    topk : int, optional — Top-K 聚焦排斥
+        有效位置掩码 (即被 mask 的位置)
+    topk : int, optional
+        Top-K 聚焦排斥。None = 全 V (默认)。
 
     Returns
     -------
-    loss_val, force_a, force_b, info
+    loss_val : float
+        标量损失值
+    force_a : (B, S, D), complex
+        Path A 的 Wirtinger 梯度 (用于模型权重更新)
+    force_b : (B, S, D), complex
+        Path B 的 Wirtinger 梯度 (用于 embedding 直接更新)
+    info : dict
+        诊断信息
     """
     eps = 1e-8
     B, S, D = z_pred.shape
@@ -100,42 +140,63 @@ def compute_boltzmann_elegant_loss_and_force(
     if N == 0:
         zero_force = torch.zeros_like(z_pred)
         return 0.0, zero_force, zero_force.clone(), {
-            "tau": 0, "p_target_mean": 0, "effective_k": 0,
+            "tau": 0, "tau_0": 0, "p_target_mean": 0, "effective_k": 0,
         }
 
     # ================================================================
     #  Step 1: E_k — 流形能量 (N, V)
     # ================================================================
+    #
+    # 原始能量 E_k_raw = Σ_d [ln²(r_d/r̂_{k,d}) + |u_d - û_{k,d}|²]
+    # 归一化能量 Ẽ_k = E_k_raw / D
+    #
+    # [v5.2] 归一化使得 Ẽ_k = O(1), 消除对 d_model 的依赖。
 
     z_exp = z_valid.unsqueeze(1)              # (N, 1, D)
     e_exp = all_embeds.unsqueeze(0)           # (1, V, D)
 
-    r = z_exp.abs() + eps
-    r_hat = e_exp.abs() + eps
-    u = z_exp / r
-    u_hat = e_exp / r_hat
+    r = z_exp.abs() + eps                     # (N, 1, D) 预测的模长
+    r_hat = e_exp.abs() + eps                 # (1, V, D) embedding 的模长
+    u = z_exp / r                             # (N, 1, D) 预测的单位相位
+    u_hat = e_exp / r_hat                     # (1, V, D) embedding 的单位相位
 
-    log_ratio = torch.log(r) - torch.log(r_hat)
-    energy_mag = log_ratio.pow(2)
-    energy_phase = (u - u_hat).abs().pow(2)
+    # 径向能量: ln²(r/r̂) — 对数模长比
+    log_ratio = torch.log(r) - torch.log(r_hat)   # (N, V, D)
+    energy_mag = log_ratio.pow(2)                  # (N, V, D)
 
-    E_k = (energy_mag + energy_phase).sum(dim=-1)  # (N, V)
+    # 相位能量: |u - û|² — 单位相位差
+    energy_phase = (u - u_hat).abs().pow(2)        # (N, V, D)
+
+    # 原始总能量 (未归一化, 用于计算力 F_k)
+    E_k_raw = (energy_mag + energy_phase).sum(dim=-1)  # (N, V)
+
+    # [v5.2] 归一化能量 (用于 τ、logits、loss)
+    E_k = E_k_raw / D                                  # (N, V)
 
     # ================================================================
     #  Step 2: F_k — 流形力 (N, V, D)
     # ================================================================
+    #
+    # F_k = ∂E_k_raw/∂z* (基于未归一化的 E_k_raw)
+    #
+    # Wirtinger 导数:
+    #   径向力: (ln(r/r̂) / r) · u
+    #   切向力: (u·u·û* - û) / (2r)
+    #
+    # 注意: F_k 不除以 D, 因为链式法则中 1/D 因子
+    #       在最终梯度组装时统一乘入。
 
-    F_radial = (log_ratio / r) * u
-    F_tangential = (u * u * u_hat.conj() - u_hat) / (2.0 * r)
-    F_k = F_radial + F_tangential                  # (N, V, D)
+    F_radial = (log_ratio / r) * u                     # (N, V, D)
+    F_tangential = (u * u * u_hat.conj() - u_hat) / (2.0 * r)  # (N, V, D)
+    F_k = F_radial + F_tangential                      # (N, V, D)
 
     # ================================================================
     #  Step 3: Target 量
     # ================================================================
 
     idx_n = torch.arange(N, device=z_pred.device)
-    E_target = E_k[idx_n, true_ids]                # (N,)
-    F_target = F_k[idx_n, true_ids]                # (N, D)
+    E_target = E_k[idx_n, true_ids]                    # (N,) 归一化能量
+    F_target = F_k[idx_n, true_ids]                    # (N, D) 未归一化力
 
     # ================================================================
     #  Step 3.5: Top-K 聚焦排斥
@@ -145,50 +206,80 @@ def compute_boltzmann_elegant_loss_and_force(
     effective_k = topk if use_topk else V
 
     if use_topk:
+        # 基于归一化能量选 Top-K (排序不受 1/D 影响)
         _, topk_idx = E_k.topk(topk, dim=-1, largest=False)
         topk_mask = torch.zeros(N, V, dtype=torch.bool, device=E_k.device)
         topk_mask.scatter_(1, topk_idx, True)
+        # 确保 target 始终在 Top-K 中
         topk_mask[idx_n, true_ids] = True
     else:
         topk_mask = None
 
     # ================================================================
-    #  Step 4: τ_n = std({E_k : k ≠ target}) — per-sample 温度
+    #  Step 4: 自洽 τ (单步) — per-sample 温度
     # ================================================================
     #
-    # [v4.4] τ 排除 target:
-    #   温度度量的是竞争者 (热浴) 的能量分散度, 不包含目标粒子。
-    #   这消除了 "E_target→0 → std↑ → τ↑ → softmax变平" 的正反馈循环。
+    # [v5.2] 两步流程:
     #
-    #   构造 competitor_mask: 在 topk_mask (如有) 基础上排除 target 位置。
-    #   τ = std(E_competitors), Ē_c = mean(E_competitors)。
+    #   Step A: τ₀ = std_uniform({Ẽ_k : k ∈ C})
+    #           初始温度估计, 来自竞争者的 uniform-weighted std。
+    #           这是 v4.4 的定义 (归一化后), 作为迭代的起点。
+    #
+    #   Step B: p_k^(0) = softmax(-Ẽ_k / τ₀)  (仅竞争者)
+    #           用 τ₀ 计算初始 Boltzmann 分布。
+    #
+    #   Step C: τ* = √[Σ_{k∈C} p_k^(0) (Ẽ_k - Ē_p)²] + ε
+    #           用 Boltzmann 分布自加权计算最终温度。
+    #           远处 token 的 p_k 极小, 对 τ* 几乎无贡献。
+    #
+    #   不在单步内迭代到不动点 ——
+    #   训练循环本身就是不动点迭代的外层循环。
 
-    # 构造竞争者掩码: 排除 target 位置
+    # ---- 构造竞争者掩码: 排除 target 位置 ----
     competitor_mask = torch.ones(N, V, dtype=torch.bool, device=E_k.device)
-    competitor_mask[idx_n, true_ids] = False                       # 排除 target
+    competitor_mask[idx_n, true_ids] = False            # 排除 target
 
     if use_topk:
-        # topk 模式下, 竞争者 = topk_set ∩ {k ≠ target}
+        # 竞争者 = topk_set ∩ {k ≠ target}
         competitor_mask = competitor_mask & topk_mask
 
+    # ---- Step A: τ₀ = std_uniform(Ẽ_competitors) ----
     # 用 nan-masking 安全计算 mean 和 std
-    E_comp = E_k.masked_fill(~competitor_mask, float('nan'))       # (N, V)
-    E_bar_c = torch.nanmean(E_comp, dim=-1, keepdim=True)         # (N, 1)
-    tau_per = torch.nanmean(
+    E_comp = E_k.masked_fill(~competitor_mask, float('nan'))   # (N, V)
+    E_bar_c = torch.nanmean(E_comp, dim=-1, keepdim=True)     # (N, 1)
+    tau_0_per = torch.nanmean(
         (E_comp - E_bar_c).pow(2), dim=-1
-    ).sqrt() + eps                                                  # (N,)
-    V_eff = competitor_mask.sum(dim=-1).float()                    # (N,) = V-1 或 topk-1
+    ).sqrt() + eps                                              # (N,)
 
-    tau_col = tau_per.unsqueeze(-1)                 # (N, 1) for broadcasting
+    tau_0_col = tau_0_per.unsqueeze(-1)                         # (N, 1)
+
+    # ---- Step B: p_k^(0) — 初始 Boltzmann 分布 (仅竞争者) ----
+    # 此处的 softmax 只用于计算 τ*, 不用于最终 loss。
+    # 只在竞争者上做 softmax (target 不参与温度计算)。
+    logits_for_tau = (-E_k / tau_0_col).masked_fill(
+        ~competitor_mask, float('-inf')
+    )                                                           # (N, V)
+    p_tau = torch.softmax(logits_for_tau, dim=-1)               # (N, V)
+
+    # ---- Step C: τ* = Boltzmann-weighted std ----
+    # Ē_p = Σ_{k∈C} p_k^(0) · Ẽ_k — Boltzmann 加权均值
+    E_bar_p = (p_tau * E_k).sum(dim=-1, keepdim=True)          # (N, 1)
+
+    # Var_p = Σ_{k∈C} p_k^(0) · (Ẽ_k - Ē_p)² — Boltzmann 加权方差
+    E_dev = (E_k - E_bar_p).masked_fill(~competitor_mask, 0.0) # (N, V)
+    var_p = (p_tau * E_dev.pow(2)).sum(dim=-1)                 # (N,)
+    tau_star_per = var_p.sqrt() + eps                            # (N,)
+
+    tau_star_col = tau_star_per.unsqueeze(-1)                    # (N, 1)
 
     # ================================================================
-    #  Step 5: Boltzmann 概率与损失
+    #  Step 5: 最终 Boltzmann 概率与损失 (使用 τ*)
     # ================================================================
     #
-    # 注: logits 仍包含所有 V 个 token (包括 target)。
-    #     只有 τ 的计算排除了 target, loss/概率的定义不变。
+    # logits 包含所有 V 个 token (包括 target)。
+    # 温度使用 τ* (自洽温度)。
 
-    logits = -E_k / tau_col                         # (N, V)
+    logits = -E_k / tau_star_col                                # (N, V)
 
     if use_topk:
         logits = logits.masked_fill(~topk_mask, float('-inf'))
@@ -196,42 +287,29 @@ def compute_boltzmann_elegant_loss_and_force(
     loss_per_sample = F.cross_entropy(logits, true_ids, reduction='none')
     loss_val = loss_per_sample.mean().item()
 
-    p_k = torch.softmax(logits, dim=-1)             # (N, V)
+    p_k_final = torch.softmax(logits, dim=-1)                   # (N, V)
 
     # ================================================================
-    #  Step 6: 完整 Wirtinger 梯度 (含 τ-throughput)
+    #  Step 6: Wirtinger 梯度 (τ* 视为常数, 无 Term 2)
     # ================================================================
     #
-    # Term 1: 标准 Boltzmann-Elegant 力 (τ 视为常数)
-    #   (1/τ)(F_target - Σ p_k F_k)
+    # [v5.2] 只有 Term 1:
     #
-    # Term 2: τ-throughput 修正 (仅通过竞争者传导)
-    #   [v4.4] 求和排除 target, 切断 z → E_target → τ 自反馈
-    #   = [(Ē_p - E_target) / ((V-1) · τ³)] · Σ_{k≠tgt} (E_k - Ē_c) F_k
+    #   dL/dz* = (1 / (τ* · D)) · (F_target - Σ_k p_k F_k)
+    #
+    # 其中:
+    #   · 1/τ* 来自 softmax(-Ẽ/τ*) 对 Ẽ 的导数
+    #   · 1/D  来自 Ẽ = E/D 的链式法则 (F_k = ∂E/∂z*, Ẽ 对 z* 的导数是 F_k/D)
+    #   · F_target - Σ p_k F_k 是吸引力减去 Boltzmann 期望排斥力
 
-    # --- Term 1 ---
-    weighted_F = (p_k.unsqueeze(-1) * F_k).sum(dim=1)   # (N, D)
-    term1 = (1.0 / tau_col) * (F_target - weighted_F)    # (N, D)
+    # Σ_k p_k F_k — Boltzmann 加权排斥力
+    weighted_F = (p_k_final.unsqueeze(-1) * F_k).sum(dim=1)    # (N, D)
 
-    # --- Term 2: τ-throughput (竞争者 only) ---
-    # ∂L/∂τ = (Ē_p - E_target) / τ²
-    E_p_mean = (p_k * E_k).sum(dim=-1)                   # (N,)
-    dL_dtau = (E_p_mean - E_target) / (tau_per ** 2)      # (N,)
-
-    # [v4.4] dτ/dz* = [1/((V-1) · τ)] Σ_{k≠tgt} (E_k - Ē_c) F_k
-    #   E_bar_c 已在 Step 4 中基于竞争者计算
-    E_centered = E_k - E_bar_c                             # (N, V)
-    # 排除 target 和 topk 之外的 token
-    E_centered = E_centered.masked_fill(~competitor_mask, 0.0)
-
-    # Σ_{k≠tgt} (E_k - Ē_c) F_k → (N, D)
-    centered_force = (E_centered.unsqueeze(-1) * F_k).sum(dim=1)  # (N, D)
-    dtau_dz = centered_force / (V_eff.unsqueeze(-1) * tau_col)    # (N, D)
-
-    term2 = dL_dtau.unsqueeze(-1) * dtau_dz              # (N, D)
-
-    # --- 合并 ---
-    F_BE = (term1 + term2)                                # (N, D)
+    # 完整梯度 (τ* 视为常数)
+    #   scale = 1 / (τ* · D)
+    #   gradient = scale * (F_target - weighted_F)
+    scale = 1.0 / (tau_star_col * D)                            # (N, 1)
+    gradient = scale * (F_target - weighted_F)                  # (N, D)
 
     # ================================================================
     #  Step 7: 放回 (B, S, D) 并归一化
@@ -239,38 +317,52 @@ def compute_boltzmann_elegant_loss_and_force(
 
     num_valid = float(max(N, 1))
 
-    # Path A: 完整 Boltzmann 力 (Term 1 + Term 2) → 模型权重
+    # Path A: Boltzmann-Elegant 梯度 → 模型权重更新
+    # [v5.2] 只有 Term 1 (τ* 视为常数)
     force_a = torch.zeros_like(z_pred)
-    force_a[valid_mask] = F_BE / num_valid
+    force_a[valid_mask] = gradient / num_valid
 
-    # [v4.4] Path B: Term 1 Boltzmann 力 (吸引 + 排斥, 无 τ-throughput) → embedding
-    #   旧: force_b = F_target (纯吸引)
-    #   新: force_b = (1/τ)(F_target - Σ p_k F_k) (含排斥, 推开竞争者)
+    # Path B: Boltzmann-Elegant 梯度 → embedding 直接更新
+    # [v5.2] 与 Path A 相同 (Term 2 已消除)
+    # 保持独立返回以维持接口兼容和未来扩展空间
     force_b = torch.zeros_like(z_pred)
-    force_b[valid_mask] = term1 / num_valid
+    force_b[valid_mask] = gradient / num_valid
 
     # ================================================================
     #  Step 8: 诊断
     # ================================================================
 
-    p_target_vals = p_k[idx_n, true_ids]
-    loss_elegant = (E_target / D).mean().item()
+    p_target_vals = p_k_final[idx_n, true_ids]                  # (N,)
 
+    # loss_elegant: 归一化的 target 能量 (Ẽ_target, 已经是 E/D)
+    loss_elegant = E_target.mean().item()
+
+    # Energy gap (基于归一化能量)
     E_k_for_min = E_k.clone()
     E_k_for_min[idx_n, true_ids] = float('inf')
-    E_nearest_wrong = E_k_for_min.min(dim=-1).values
-    signed_gap = E_nearest_wrong - E_target
+    E_nearest_wrong = E_k_for_min.min(dim=-1).values           # (N,)
+    signed_gap = E_nearest_wrong - E_target                    # (N,)
     negative_ratio = (signed_gap < 0).float().mean().item()
 
     info = {
-        "tau": tau_per.mean().item(),
-        "tau_std": tau_per.std().item(),
+        # τ 相关 (均为归一化后的值)
+        "tau": tau_star_per.mean().item(),                      # 自洽温度 (均值)
+        "tau_std": tau_star_per.std().item(),                   # 自洽温度 (std)
+        "tau_0": tau_0_per.mean().item(),                       # 初始温度 (uniform std)
+
+        # Boltzmann 概率
         "p_target_mean": p_target_vals.mean().item(),
         "p_target_min": p_target_vals.min().item(),
+
+        # 能量间距 (归一化后)
         "energy_gap_mean": signed_gap.abs().mean().item(),
         "negative_margin_ratio": negative_ratio,
-        "loss_elegant": loss_elegant,
-        "loss_be": loss_val,
+
+        # 损失
+        "loss_elegant": loss_elegant,                           # 归一化 target 能量
+        "loss_be": loss_val,                                    # Boltzmann-Elegant 损失
+
+        # 配置
         "effective_k": effective_k,
     }
 

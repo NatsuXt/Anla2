@@ -1,9 +1,18 @@
 """
 保存位置: Anla/visualization/visualize_config_B.py
-Config B 全量可视化分析
+Config B 全量可视化分析 (v5.2)
+
+v5.2 变更:
+    - Fig 2 τ 面板: 显示 τ* (self-consistent) 和 τ₀ (uniform std) 双曲线
+    - Fig 7 Energy Landscape: 使用归一化能量 Ẽ=E/D, 自洽 τ 计算
+    - Fig 1 ρ 注释: 更新为 ρ=p_target_mean 语义
+    - Summary Report: 添加 τ₀, BE-NN% (Boltzmann-Elegant 能量最近邻)
+    - 模型重建: 自动识别 v4/v5 checkpoint, 使用对应模型类
+    - Attention Pattern: 兼容 v5 多 Block 结构
+
 用法:
     python -m Anla.visualization.visualize_config_B
-    python -m Anla.visualization.visualize_config_B --data-dir Logs/config_B_analysis/config_B_v256_d64
+    python -m Anla.visualization.visualize_config_B --data-dir Logs/capacity_pressure_test_v5/config_B_v256_d64
 """
 import argparse, json, os, sys, warnings
 from typing import Dict, Any, Optional, Tuple
@@ -51,9 +60,19 @@ def load_checkpoint(data_dir, device="cpu"):
 def reconstruct_model(checkpoint, device="cpu"):
     try:
         import torch
-        from Anla.experiments.capacity.capacity_pressure_test_v4 import AnlaManifoldInpainter
-        cfg = checkpoint["config"]
-        model = AnlaManifoldInpainter(cfg["vocab_size"], cfg["d_model"], cfg["num_heads"]).to(device)
+        # [v5.2] 使用 v5 模型类
+        version = checkpoint.get("version", "v4")
+        if version.startswith("v5"):
+            from Anla.experiments.capacity.capacity_pressure_test_v5 import AnlaManifoldInpainter_v5
+            cfg = checkpoint["config"]
+            num_blocks = cfg.get("num_blocks", 3)
+            model = AnlaManifoldInpainter_v5(
+                cfg["vocab_size"], cfg["d_model"], cfg["num_heads"], num_blocks
+            ).to(device)
+        else:
+            from Anla.experiments.capacity.capacity_pressure_test_v4 import AnlaManifoldInpainter
+            cfg = checkpoint["config"]
+            model = AnlaManifoldInpainter(cfg["vocab_size"], cfg["d_model"], cfg["num_heads"]).to(device)
         model.load_state_dict(checkpoint["model_state_dict"]); model.eval(); return model
     except Exception as e:
         print(f"  [WARN] Model failed: {e}"); return None
@@ -94,7 +113,7 @@ def plot_training_dynamics(history, config, result, save_path):
     ax.plot(epochs, history["rho"], color="mediumpurple", linewidth=1.0)
     ax.set_xlabel("Epoch"); ax.set_ylabel("rho"); ax.set_title("(4) Learning Progress rho(t)")
     ax.set_ylim(-0.05, 1.05); ax.grid(True, alpha=0.3)
-    ax.text(0.02, 0.95, "rho=(L0-L_smooth)/L0\n0=no progress, 1=converged", transform=ax.transAxes, fontsize=7, va="top", bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5))
+    ax.text(0.02, 0.95, "v5.2: rho=p_target_mean\n0=random, 1=confident\n(v4: rho=(L0-L)/L0)", transform=ax.transAxes, fontsize=7, va="top", bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5))
 
     ax = axes[1, 1]
     ax.plot(epochs, history["emb_rms"], color="teal", linewidth=1.0)
@@ -119,12 +138,17 @@ def plot_boltzmann_diagnostics(history, config, save_path):
     fig.suptitle(f"Boltzmann-Elegant Diagnostics - {config['name']}", fontsize=14, fontweight="bold")
 
     ax = axes[0, 0]; tau_vals = history.get("tau", [])
+    tau_0_vals = history.get("tau_0", [])
     if tau_vals and any(v > 0 for v in tau_vals):
-        ax.plot(epochs, tau_vals, color="crimson", linewidth=1.0)
-        ax.set_ylabel("tau=std(E_k)"); ax.set_title("(1) Temperature tau")
-        ax.text(0.02, 0.95, "tau=std(E_k)\nhigh->flat\nlow->sharp", transform=ax.transAxes, fontsize=7, va="top", bbox=dict(boxstyle="round", facecolor="lightyellow", alpha=0.5))
+        ax.plot(epochs, tau_vals, color="crimson", linewidth=1.0, label="τ* (self-consistent)")
+        # [v5.2] 同时绘制 τ₀ (uniform std) 用于对比
+        if tau_0_vals and len(tau_0_vals) == len(epochs):
+            ax.plot(epochs, tau_0_vals, color="gray", linewidth=0.7, alpha=0.6, linestyle="--", label="τ₀ (uniform std)")
+        ax.set_ylabel("tau"); ax.set_title("(1) Temperature τ")
+        ax.legend(fontsize=7)
+        ax.text(0.02, 0.95, "τ*: Boltzmann-weighted std\nτ₀: uniform-weighted std\nhigh→flat, low→sharp", transform=ax.transAxes, fontsize=7, va="top", bbox=dict(boxstyle="round", facecolor="lightyellow", alpha=0.5))
     else:
-        ax.text(0.5, 0.5, "tau unavailable", transform=ax.transAxes, ha="center", va="center", fontsize=12, color="gray"); ax.set_title("(1) Temperature tau")
+        ax.text(0.5, 0.5, "tau unavailable", transform=ax.transAxes, ha="center", va="center", fontsize=12, color="gray"); ax.set_title("(1) Temperature τ")
     ax.set_xlabel("Epoch"); ax.grid(True, alpha=0.3)
 
     ax = axes[0, 1]; p_vals = history.get("p_target_mean", [])
@@ -150,7 +174,7 @@ def plot_boltzmann_diagnostics(history, config, save_path):
     ax = axes[1, 1]; gap_vals = history.get("energy_gap", [])
     if gap_vals and any(v > 0 for v in gap_vals):
         ax.plot(epochs, gap_vals, color="seagreen", linewidth=1.0)
-        ax.set_ylabel("|E_nw-E_tgt|"); ax.set_title("(4) Energy Gap")
+        ax.set_ylabel("|Ẽ_nw-Ẽ_tgt|"); ax.set_title("(4) Energy Gap (normalized)")
     else:
         ax.text(0.5, 0.5, "Energy Gap unavailable", transform=ax.transAxes, ha="center", va="center", fontsize=12, color="gray"); ax.set_title("(4) Energy Gap")
     ax.set_xlabel("Epoch"); ax.grid(True, alpha=0.3)
@@ -329,10 +353,18 @@ def plot_energy_landscape(z, config, save_path):
     ze, ee = z[:, np.newaxis, :], z[np.newaxis, :, :]
     r, rh = np.abs(ze)+eps, np.abs(ee)+eps; u, uh = ze/r, ee/rh
     lr = np.log(r) - np.log(rh)
-    E_all = (lr**2 + np.abs(u-uh)**2).sum(axis=-1)
+    # [v5.2] 归一化能量 Ẽ = E/D
+    E_all = (lr**2 + np.abs(u-uh)**2).sum(axis=-1) / D
     E_tgt = np.diag(E_all); Em = E_all.copy(); np.fill_diagonal(Em, np.inf)
     E_nw = Em.min(axis=1); gap = E_nw - E_tgt
-    tau = np.std(E_all, axis=1)+eps; logits = -E_all/tau[:, np.newaxis]
+    # [v5.2] 自洽 τ: 先用 uniform std 作 τ₀, 再用 Boltzmann-weighted std
+    tau_0 = np.std(E_all, axis=1)+eps
+    logits_0 = -E_all/tau_0[:, np.newaxis]
+    logits_0 -= logits_0.max(axis=1, keepdims=True)
+    p_0 = np.exp(logits_0) / np.exp(logits_0).sum(axis=1, keepdims=True)
+    E_bar_p = (p_0 * E_all).sum(axis=1)
+    tau = np.sqrt((p_0 * (E_all - E_bar_p[:, np.newaxis])**2).sum(axis=1)) + eps
+    logits = -E_all/tau[:, np.newaxis]
     logits -= logits.max(axis=1, keepdims=True)
     el = np.exp(logits); probs = el/el.sum(axis=1, keepdims=True)
     ptgt = np.array([probs[k,k] for k in range(V)])
@@ -344,7 +376,7 @@ def plot_energy_landscape(z, config, save_path):
     ax.scatter(E_tgt, E_nw, s=5, alpha=0.6, color="royalblue")
     lim = max(E_nw.max(), E_tgt.max())*1.1
     ax.plot([0,lim], [0,lim], "r--", alpha=0.5, label="E_nw=E_tgt")
-    ax.set_xlabel("E_target"); ax.set_ylabel("E_nearest_wrong"); ax.set_title("(a) Target vs Nearest Wrong")
+    ax.set_xlabel("Ẽ_target"); ax.set_ylabel("Ẽ_nearest_wrong"); ax.set_title("(a) Target vs Nearest Wrong (Ẽ=E/D)")
     ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
 
     ax = axes[0, 1]
@@ -352,7 +384,7 @@ def plot_energy_landscape(z, config, save_path):
     nc = int(np.sum(gap < 0))
     ax.axvline(x=0, color="red", linestyle="--", alpha=0.7, label=f"Zero (neg: {nc}/{V}={nc/V:.1%})")
     ax.axvline(x=np.median(gap), color="orange", linestyle="--", alpha=0.5, label=f"Median: {np.median(gap):.4f}")
-    ax.set_xlabel("E_nw-E_tgt"); ax.set_ylabel("Count"); ax.set_title("(b) Energy Gap Distribution")
+    ax.set_xlabel("Ẽ_nw-Ẽ_tgt"); ax.set_ylabel("Count"); ax.set_title("(b) Energy Gap Distribution (normalized)")
     ax.legend(fontsize=7); ax.grid(True, alpha=0.3, axis="y")
 
     ax = axes[1, 0]
@@ -472,7 +504,6 @@ def _save_placeholder(save_path, title):
 def plot_attention_pattern(data_dir, config, save_path, device="cpu"):
     try:
         import torch
-        from Anla.experiments.capacity.capacity_pressure_test_v4 import AnlaManifoldInpainter
     except ImportError:
         _save_placeholder(save_path, "Attention - Import Failed"); return
     checkpoint = load_checkpoint(data_dir, device)
@@ -480,6 +511,9 @@ def plot_attention_pattern(data_dir, config, save_path, device="cpu"):
     model = reconstruct_model(checkpoint, device)
     if model is None: _save_placeholder(save_path, "Attention - Model Failed"); return
     import torch
+
+    # [v5.2] 兼容 v4 和 v5 模型结构
+    version = checkpoint.get("version", "v4")
     cfg = checkpoint["config"]; vs, sl = cfg["vocab_size"], cfg["seq_len"]
     seq = [(0+i)%vs for i in range(sl)]
     ids = torch.tensor([seq], dtype=torch.long, device=device)
@@ -487,9 +521,23 @@ def plot_attention_pattern(data_dir, config, save_path, device="cpu"):
     for p in mpos: ids[0, p] = vs
     model.train()
     with torch.no_grad(): model.forward(ids)
-    aw = model.block.attn.attn_cache
-    if aw is None: _save_placeholder(save_path, "Attention - Cache Empty"); model.eval(); return
+
+    # 获取 attention cache — v5 使用 blocks[0], v4 使用 block
+    attn_cache = None
+    if version.startswith("v5"):
+        # v5: model.blocks[0].attn.attn_cache
+        for blk in model.blocks:
+            if hasattr(blk, 'attn') and hasattr(blk.attn, 'attn_cache') and blk.attn.attn_cache is not None:
+                attn_cache = blk.attn.attn_cache; break
+    else:
+        # v4: model.block.attn.attn_cache
+        if hasattr(model, 'block') and hasattr(model.block, 'attn'):
+            attn_cache = model.block.attn.attn_cache
+
+    if attn_cache is None:
+        _save_placeholder(save_path, "Attention - Cache Empty"); model.eval(); return
     model.eval()
+    aw = attn_cache
     am = aw.abs().cpu().numpy()[0]; ap = torch.angle(aw).cpu().numpy()[0]; nh = am.shape[0]
     fig, axes = plt.subplots(2, nh, figsize=(5*nh, 9))
     if nh == 1: axes = axes.reshape(2, 1)
@@ -535,7 +583,8 @@ def generate_summary_report(result, z, save_path, tag=""):
     L.append(f"     Time:       {result.get('training_time_sec',0):.0f}s")
     L.append(f"     rho:        {result.get('final_rho',0):.4f}")
     L.append(f"\n  III. Boltzmann")
-    L.append(f"     tau:        {result.get('final_tau','N/A')}")
+    L.append(f"     τ* (self-consistent): {result.get('final_tau','N/A')}")
+    L.append(f"     τ₀ (uniform std):     {result.get('final_tau_0','N/A')}")
     L.append(f"     p_tgt:      {result.get('final_p_target_mean','N/A')}")
     L.append(f"     neg%:       {result.get('final_negative_margin_ratio','N/A')}")
     L.append(f"\n  IV. Geometry")
@@ -543,8 +592,17 @@ def generate_summary_report(result, z, save_path, tag=""):
     welch = np.sqrt((V-D)/(D*(V-1)))
     L.append(f"     Welch LB:   {welch:.4f}")
     L.append(f"     JL UB:      {np.sqrt(np.log(V)/(2*D)):.4f}")
-    L.append(f"\n  V. Ring Topology")
-    L.append(f"     NN%:        {np.mean(nn_rd==1):.1%} ({np.sum(nn_rd==1)}/{V})")
+    L.append(f"\n  V. Ring Topology (L2 distance)")
+    L.append(f"     NN% (L2):   {np.mean(nn_rd==1):.1%} ({np.sum(nn_rd==1)}/{V})")
+    # [v5.2] 同时计算 BE-NN% (Boltzmann-Elegant 能量最近邻)
+    ze_s, ee_s = z[:, np.newaxis, :], z[np.newaxis, :, :]
+    r_s, rh_s = np.abs(ze_s)+1e-8, np.abs(ee_s)+1e-8
+    u_s, uh_s = ze_s/r_s, ee_s/rh_s
+    E_be = ((np.log(r_s)-np.log(rh_s))**2 + np.abs(u_s-uh_s)**2).sum(axis=-1) / D
+    np.fill_diagonal(E_be, np.inf)
+    be_nn_ids = np.argmin(E_be, axis=1)
+    be_nn_rd = np.minimum(np.abs(be_nn_ids-np.arange(V)), V-np.abs(be_nn_ids-np.arange(V)))
+    L.append(f"     NN% (BE):   {np.mean(be_nn_rd==1):.1%} ({np.sum(be_nn_rd==1)}/{V})")
     ut = dm[np.triu_indices(V, k=1)]; vut = ut[ut < np.inf]
     L.append(f"     Dist min/med/max: {np.min(vut):.4f}/{np.median(vut):.4f}/{np.max(vut):.4f}")
     L.append(f"\n  VI. Phase")
@@ -591,12 +649,16 @@ def _run_embedding_plots(z, config, vis_dir, tag=""):
 # =============================================================================
 def main():
     parser = argparse.ArgumentParser(description="Config B Visualization")
-    parser.add_argument("--data-dir", type=str, default=os.path.join(_ANLA_ROOT, "Logs", "config_B_analysis", "config_B_v256_d64"))
+    # [v5.2] 默认路径: 优先查找 v5 输出目录
+    default_v5 = os.path.join(_ANLA_ROOT, "Logs", "capacity_pressure_test_v5", "config_B_v256_d64")
+    default_v4 = os.path.join(_ANLA_ROOT, "Logs", "config_B_analysis", "config_B_v256_d64")
+    default_dir = default_v5 if os.path.exists(default_v5) else default_v4
+    parser.add_argument("--data-dir", type=str, default=default_dir)
     parser.add_argument("--device", type=str, default="cpu")
     args = parser.parse_args()
     data_dir = args.data_dir; vis_dir = os.path.join(data_dir, "vis")
     os.makedirs(vis_dir, exist_ok=True)
-    print("="*72); print("  Config B Full Visualization (v4.4 Dual-Track)"); print("="*72)
+    print("="*72); print("  Config B Full Visualization (v5.2)"); print("="*72)
     print(f"  Data: {data_dir}\n  Output: {vis_dir}\n")
     result = load_training_log(data_dir); history, config = result["history"], result["config"]
 
