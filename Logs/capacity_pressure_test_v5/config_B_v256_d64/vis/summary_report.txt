@@ -8,28 +8,28 @@
 
   II. Results
      Train Acc:  100.00% (epoch ?)
-     Test Acc:   98.15% +/- 1.31%
-     Time:       432s
+     Test Acc:   99.60% +/- 0.53%
+     Time:       416s
      rho:        0.0000
 
   III. Boltzmann
-     τ* (self-consistent): 0.3814948499202728
+     τ* (self-consistent): 0.20592088997364044
      τ₀ (uniform std):     N/A
-     p_tgt:      0.5873532891273499
+     p_tgt:      0.9591004848480225
      neg%:       0.0
 
   IV. Geometry
-     Mag mean/std: 0.7695/0.2288
+     Mag mean/std: 0.7732/0.2456
      Welch LB:   0.1085
      JL UB:      0.2081
 
   V. Ring Topology (L2 distance)
-     NN% (L2):   22.7% (58/256)
-     NN% (BE):   21.1% (54/256)
-     Dist min/med/max: 6.2660/9.0605/11.1772
+     NN% (L2):   26.6% (68/256)
+     NN% (BE):   20.3% (52/256)
+     Dist min/med/max: 6.4262/9.1661/11.3170
 
   VI. Phase
-     Linearity max/mean: 0.2475/0.0145
+     Linearity max/mean: 0.2766/0.0102
      #High(>0.5): 0/64
 
   VII. TDA: unavailable

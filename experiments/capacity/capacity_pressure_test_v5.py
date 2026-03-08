@@ -448,7 +448,7 @@ class AnlaManifoldInpainter_v5(nn.Module):
             模长由 Path B (Boltzmann 力场) 控制。
         """
         # Decoder 反向
-        grad = self.decoder.manual_backward(force, lr, wd)
+        grad = self.decoder.manual_backward(force, lr, 0.0)
 
         # Blocks 反向 (逆序)
         for block in reversed(self.blocks):
@@ -456,7 +456,7 @@ class AnlaManifoldInpainter_v5(nn.Module):
 
         # Encoder 反向
         grad = self.encoder_norm.manual_backward(grad, lr)
-        grad = self.encoder_linear.manual_backward(grad, lr, wd)
+        grad = self.encoder_linear.manual_backward(grad, lr, 0.0)
 
         # Rotary 反向
         grad = self.rotary.manual_backward(grad)
