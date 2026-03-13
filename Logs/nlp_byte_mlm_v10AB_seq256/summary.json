@@ -1,0 +1,13 @@
+{
+  "A_aggressive_B1": {
+    "complex_test_acc": 0.7373650813082777,
+    "complex_test_ppl": 2.5014813367544857,
+    "complex_best_train_acc": 0.805088223225277,
+    "real_test_acc": 0.7340328374566193,
+    "real_test_ppl": 2.4859605788158077,
+    "real_best_train_acc": 0.8079870915691811,
+    "delta_acc": 0.003332243851658423,
+    "complex_time": 1970.0307235717773,
+    "real_time": 616.927640914917
+  }
+}

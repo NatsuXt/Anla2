@@ -1,0 +1,56 @@
+{
+  "model": "B1_cosine_only_complex",
+  "best_train_acc": 0.26593585058871294,
+  "final_test_acc": 0.34253928578745724,
+  "final_test_ppl": 13.092170982214455,
+  "total_params": 166144,
+  "total_real_params": 330816,
+  "training_time_sec": 32.461015939712524,
+  "history": {
+    "epochs": [
+      0,
+      200,
+      400
+    ],
+    "loss": [
+      5.593258857727051,
+      3.803872585296631,
+      2.970308303833008
+    ],
+    "train_acc": [
+      0.0,
+      0.1598173515981735,
+      0.26593585058871294
+    ],
+    "test_acc": [
+      0.0003261844573106092,
+      -1.0,
+      -1.0
+    ],
+    "test_ppl": [
+      267.1690346401133,
+      -1.0,
+      -1.0
+    ],
+    "lr": [
+      6e-07,
+      0.00012059999999999999,
+      0.0002406
+    ]
+  },
+  "config": {
+    "d_model_complex": 64,
+    "d_model_real": 128,
+    "num_heads": 4,
+    "num_blocks": 3,
+    "ff_mult": 4,
+    "seq_len": 256,
+    "batch_size": 64,
+    "lr": 0.0003,
+    "weight_decay": 0.01,
+    "epochs": 500,
+    "warmup_epochs": 500,
+    "mask_prob": 0.15,
+    "log_interval": 200
+  }
+}

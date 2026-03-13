@@ -1,0 +1,12 @@
+{
+  "B1_cosine_only": {
+    "complex_test_acc": 0.7345818137114289,
+    "complex_test_ppl": 2.474459854875354,
+    "complex_best_train_acc": 0.8039934800325998,
+    "real_test_acc": 0.724950884086444,
+    "real_test_ppl": 2.5565240710911223,
+    "delta_acc": 0.009630929624984907,
+    "complex_time": 2147.4385857582092,
+    "real_time": 613.5790841579437
+  }
+}

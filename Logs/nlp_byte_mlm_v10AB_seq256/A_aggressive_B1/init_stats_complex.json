@@ -1,0 +1,38 @@
+{
+  "layer_0": {
+    "M": 256,
+    "M_N": 64,
+    "M_F": 192,
+    "novelty_ratio": 0.25,
+    "h_R_mean": 0.6873530149459839,
+    "h_R_std": 0.20593740046024323,
+    "h_R_min": 0.0917382463812828,
+    "h_R_max": 0.9721662998199463,
+    "N_group_cos_delta_mean": -1.0,
+    "F_group_cos_delta_mean": 1.0
+  },
+  "layer_1": {
+    "M": 256,
+    "M_N": 64,
+    "M_F": 192,
+    "novelty_ratio": 0.25,
+    "h_R_mean": 0.8110939264297485,
+    "h_R_std": 0.19870606064796448,
+    "h_R_min": 0.04863113909959793,
+    "h_R_max": 0.9895015954971313,
+    "N_group_cos_delta_mean": -1.0,
+    "F_group_cos_delta_mean": 1.0
+  },
+  "layer_2": {
+    "M": 256,
+    "M_N": 64,
+    "M_F": 192,
+    "novelty_ratio": 0.25,
+    "h_R_mean": 0.8075717687606812,
+    "h_R_std": 0.19599206745624542,
+    "h_R_min": 0.09976501017808914,
+    "h_R_max": 0.9928475022315979,
+    "N_group_cos_delta_mean": -1.0,
+    "F_group_cos_delta_mean": 1.0
+  }
+}
